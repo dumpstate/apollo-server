@@ -7,8 +7,7 @@ import { AddTraceArgs } from '../agent';
 import { Trace } from 'apollo-engine-reporting-protobuf';
 import pluginTestHarness from 'apollo-server-core/dist/utils/pluginTestHarness';
 
-it('trace construction', async () => {
-  const typeDefs = `
+const typeDefs = `
   type User {
     id: Int
     name: String
@@ -31,7 +30,7 @@ it('trace construction', async () => {
   }
 `;
 
-  const query = `
+const query = `
     query q {
       author(id: 5) {
         name
@@ -43,6 +42,20 @@ it('trace construction', async () => {
     }
 `;
 
+const queryReport = `
+    query report {
+      author(id: 5) {
+        name
+        posts(limit: 2) {
+          id
+        }
+      }
+      aBoolean
+    }
+`;
+
+
+it("trace construction", async () => {
   const schema = makeExecutableSchema({ typeDefs });
   addMockFunctionsToSchema({ schema });
 
@@ -305,6 +318,95 @@ function makeTestHTTP(): Trace.HTTP {
     path: null,
   });
 }
+
+describe("tests for the shouldReportQuery reporting option", () => {
+    it("report no traces", async () => {
+      const schema = makeExecutableSchema({ typeDefs });
+      addMockFunctionsToSchema({ schema });
+
+      async function addTrace(_args: AddTraceArgs) {
+        throw new Error("Should not add any traces");
+      }
+
+      const pluginInstance = plugin({traceReporting: false}, addTrace);
+
+      await pluginTestHarness({
+        pluginInstance,
+        schema,
+        graphqlRequest: {
+          query,
+          operationName: 'q',
+          extensions: {
+            clientName: 'testing suite',
+          },
+          http: new Request('http://localhost:123/foo'),
+        },
+        executor: async ({ request: { query: source }}) => {
+          return await graphql({
+            schema,
+            source,
+          });
+        },
+      });
+    });
+
+    it("report traces based on operation name", async () => {
+      const schema = makeExecutableSchema({ typeDefs });
+      addMockFunctionsToSchema({ schema });
+
+      async function addTrace(args: AddTraceArgs) {
+        expect(args.operationName).toEqual("report");
+      }
+
+      const pluginInstance = plugin(
+        {
+          traceReporting: async (request) => {
+            return request.request.operationName === 'report';
+          }
+        }, addTrace);
+
+      await pluginTestHarness({
+        pluginInstance,
+        schema,
+        graphqlRequest: {
+          query: queryReport,
+          operationName: 'report',
+          extensions: {
+            clientName: 'testing suite',
+          },
+          http: new Request('http://localhost:123/foo'),
+        },
+        executor: async ({ request: { query: source }}) => {
+          return await graphql({
+            schema,
+            source,
+          });
+        },
+      });
+
+      await pluginTestHarness({
+        pluginInstance,
+        schema,
+        graphqlRequest: {
+          query,
+          operationName: 'q',
+          extensions: {
+            clientName: 'testing suite',
+          },
+          http: new Request('http://localhost:123/foo'),
+        },
+        executor: async ({ request: { query: source }}) => {
+          return await graphql({
+            schema,
+            source,
+          });
+        },
+      });
+
+
+    });
+  });
+
 
 /**
  * TESTS FOR THE sendHeaders REPORTING OPTION
