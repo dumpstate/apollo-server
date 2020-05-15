@@ -16,10 +16,14 @@ import {
   InvalidGraphQLRequestError,
   GraphQLRequestContext,
   GraphQLResponse,
+  isDeferredGraphQLResponse,
+  DeferredGraphQLResponse,
 } from './requestPipeline';
 import { CacheControlExtensionOptions } from 'apollo-cache-control';
 import { ApolloServerPlugin } from 'apollo-server-plugin-base';
 import { WithRequired, GraphQLExecutionResult } from 'apollo-server-types';
+import { fromGraphQLError } from 'apollo-server-errors';
+import { $$asyncIterator, createAsyncIterator } from 'iterall';
 
 export interface HttpQueryRequest {
   method: string;
@@ -302,7 +306,9 @@ export async function processHTTPRequest<TContext>(
         }),
       );
 
-      body = prettyJSONStringify(responses.map(serializeGraphQLResponse));
+      body = prettyJSONStringify(responses.map(response =>
+        serializeGraphQLResponse(response as GraphQLResponse),
+      ));
     } else {
       // We're processing a normal request
       const request = parseGraphQLRequest(httpRequest.request, requestPayload);
@@ -311,26 +317,43 @@ export async function processHTTPRequest<TContext>(
         const requestContext = buildRequestContext(request);
 
         const response = await processGraphQLRequest(options, requestContext);
+        const isDeferred = isDeferredGraphQLResponse(response);
+        const initialResponse = isDeferred
+          ? (response as DeferredGraphQLResponse).initialResponse
+          : response as GraphQLResponse;
 
         // This code is run on parse/validation errors and any other error that
         // doesn't reach GraphQL execution
-        if (response.errors && typeof response.data === 'undefined') {
+        if (initialResponse.errors && typeof initialResponse.data === 'undefined') {
           // don't include options, since the errors have already been formatted
           return throwHttpGraphQLError(
-            (response.http && response.http.status) || 400,
-            response.errors as any,
+            (initialResponse.http && initialResponse.http.status) || 400,
+            initialResponse.errors as any,
             undefined,
-            response.extensions,
+            initialResponse.extensions,
           );
         }
 
-        if (response.http) {
-          for (const [name, value] of response.http.headers) {
+        if (initialResponse.http) {
+          for (const [name, value] of initialResponse.http.headers) {
             responseInit.headers![name] = value;
           }
         }
 
-        body = prettyJSONStringify(serializeGraphQLResponse(response));
+        body = prettyJSONStringify(serializeGraphQLResponse(initialResponse));
+
+        responseInit.headers!['Content-Length'] = Buffer.byteLength(
+          body,
+          'utf8',
+        ).toString();
+
+        return {
+          graphqlResponse: isDeferred ? '' : body,
+          graphqlResponses: isDeferred ? graphqlResponseToAsyncIterable(
+            response as DeferredGraphQLResponse,
+          ) : undefined,
+          responseInit,
+        };
       } catch (error) {
         if (error instanceof InvalidGraphQLRequestError) {
           throw new HttpQueryError(400, error.message);
@@ -351,15 +374,7 @@ export async function processHTTPRequest<TContext>(
     return throwHttpGraphQLError(500, [error], options);
   }
 
-  responseInit.headers!['Content-Length'] = Buffer.byteLength(
-    body,
-    'utf8',
-  ).toString();
-
-  return {
-    graphqlResponse: body,
-    responseInit,
-  };
+  return throwHttpGraphQLError(500, [new Error("Oops")]);
 }
 
 function parseGraphQLRequest(
@@ -462,4 +477,36 @@ function prettyJSONStringify(value: any) {
 
 function cloneObject<T extends Object>(object: T): T {
   return Object.assign(Object.create(Object.getPrototypeOf(object)), object);
+}
+
+function graphqlResponseToAsyncIterable(
+  result: DeferredGraphQLResponse,
+): AsyncIterable<string> {
+  const initialResponse = prettyJSONStringify(result.initialResponse);
+  let initialResponseSent = false;
+  const patchIterator = createAsyncIterator(result.deferredPatches);
+
+  return {
+    [$$asyncIterator]() {
+      return {
+        next() {
+          if (!initialResponseSent) {
+            initialResponseSent = true;
+            return Promise.resolve({ value: initialResponse, done: false });
+          } else {
+            return patchIterator.next().then(({ value, done }) => {
+              if (value && value.errors) {
+                value.errors = value.errors.map(error =>
+                  fromGraphQLError(error),
+                );
+              }
+              // Call requestDidEnd when the last patch is resolved
+              if (done) result.requestDidEnd();
+              return { value: prettyJSONStringify(value), done };
+            });
+          }
+        },
+      };
+    },
+  } as any; // Typescript does not handle $$asyncIterator correctly
 }

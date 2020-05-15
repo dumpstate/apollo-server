@@ -9,7 +9,6 @@ import {
   GraphQLFormattedError,
   validate as graphqlValidate,
   parse as graphqlParse,
-  execute as graphqlExecute,
 } from 'graphql';
 import {
   GraphQLExtension,
@@ -54,6 +53,12 @@ import {
   GraphQLRequestContextDidEncounterErrors,
 } from 'apollo-server-plugin-base';
 
+import {
+  DeferredExecutionResult,
+  ExecutionPatchResult,
+  execute as graphqlExecute,
+  isDeferredExecutionResult,
+} from './execute';
 import { Dispatcher } from './utils/dispatcher';
 import {
   InMemoryLRUCache,
@@ -73,6 +78,21 @@ import createSHA from './utils/createSHA';
 import { HttpQueryError } from './runHttpQuery';
 
 export const APQ_CACHE_PREFIX = 'apq:';
+
+export interface DeferredGraphQLResponse {
+  initialResponse: GraphQLResponse;
+  deferredPatches: AsyncIterable<ExecutionPatchResult>;
+  requestDidEnd: () => void;
+}
+
+export function isDeferredGraphQLResponse(
+  result: any,
+): result is DeferredGraphQLResponse {
+  return (
+    (<DeferredGraphQLResponse>result).initialResponse !== undefined &&
+    (<DeferredGraphQLResponse>result).deferredPatches !== undefined
+  );
+}
 
 function computeQueryHash(query: string) {
   return createSHA('sha256')
@@ -116,7 +136,7 @@ type Mutable<T> = { -readonly [P in keyof T]: T[P] };
 export async function processGraphQLRequest<TContext>(
   config: GraphQLRequestPipelineConfig<TContext>,
   requestContext: Mutable<GraphQLRequestContext<TContext>>,
-): Promise<GraphQLResponse> {
+): Promise<GraphQLResponse | DeferredGraphQLResponse> {
   // For legacy reasons, this exported method may exist without a `logger` on
   // the context.  We'll need to make sure we account for that, even though
   // all of our own machinery will certainly set it now.
@@ -219,6 +239,7 @@ export async function processGraphQLRequest<TContext>(
       'metrics' | 'queryHash'
     >,
   });
+  let response: GraphQLResponse | DeferredGraphQLResponse | null = null;
 
   try {
     // If we're configured with a document store (by default, we are), we'll
@@ -352,7 +373,7 @@ export async function processGraphQLRequest<TContext>(
       ).catch(logger.warn);
     }
 
-    let response: GraphQLResponse | null = await dispatcher.invokeHooksUntilNonNull(
+    response = await dispatcher.invokeHooksUntilNonNull(
       'responseForOperation',
       requestContext as GraphQLRequestContextResponseForOperation<TContext>,
     );
@@ -367,16 +388,26 @@ export async function processGraphQLRequest<TContext>(
           requestContext as GraphQLRequestContextExecutionDidStart<TContext>,
         );
 
-        if (result.errors) {
-          await didEncounterErrors(result.errors);
+        if (result.hasOwnProperty('errors') && (result as any).errors) {
+          await didEncounterErrors((result as any).errors);
         }
 
         response = {
           ...result,
-          errors: result.errors ? formatErrors(result.errors) : undefined,
+          errors: (result as any).errors ? formatErrors((result as any).errors) : undefined,
         };
 
-        executionDidEnd();
+        if (isDeferredExecutionResult(result)) {
+          const patches = result.deferredPatches;
+
+          response = {
+            initialResponse: response,
+            deferredPatches: patches!,
+            requestDidEnd: executionDidEnd,
+          };
+        } else {
+          executionDidEnd();
+        }
       } catch (executionError) {
         executionDidEnd(executionError);
         return await sendErrorResponse(executionError);
@@ -399,12 +430,12 @@ export async function processGraphQLRequest<TContext>(
 
     const formattedExtensions = extensionStack.format();
     if (Object.keys(formattedExtensions).length > 0) {
-      response.extensions = formattedExtensions;
+      (response as any).extensions = formattedExtensions;
     }
 
-    if (config.formatResponse) {
+    if (config.formatResponse && !isDeferredGraphQLResponse(response)) {
       const formattedResponse: GraphQLResponse | null = config.formatResponse(
-        response,
+        response as GraphQLResponse,
         requestContext,
       );
       if (formattedResponse != null) {
@@ -414,7 +445,9 @@ export async function processGraphQLRequest<TContext>(
 
     return sendResponse(response);
   } finally {
-    requestDidEnd();
+    if (!isDeferredGraphQLResponse(response)) {
+      requestDidEnd();
+    }
   }
 
   function parse(
@@ -449,7 +482,7 @@ export async function processGraphQLRequest<TContext>(
 
   async function execute(
     requestContext: GraphQLRequestContextExecutionDidStart<TContext>,
-  ): Promise<GraphQLExecutionResult> {
+  ): Promise<GraphQLExecutionResult | DeferredExecutionResult> {
     const { request, document } = requestContext;
 
     const executionArgs: ExecutionArgs = {
@@ -484,24 +517,49 @@ export async function processGraphQLRequest<TContext>(
   }
 
   async function sendResponse(
-    response: GraphQLResponse,
-  ): Promise<GraphQLResponse> {
-    // We override errors, data, and extensions with the passed in response,
-    // but keep other properties (like http)
-    requestContext.response = extensionStack.willSendResponse({
-      graphqlResponse: {
+    graphqlResponse: GraphQLResponse | DeferredGraphQLResponse,
+  ): Promise<GraphQLResponse | DeferredGraphQLResponse> {
+    if (isDeferredGraphQLResponse(graphqlResponse)) {
+      const response = graphqlResponse as DeferredGraphQLResponse;
+
+      requestContext.response = extensionStack.willSendResponse({
+        // graphqlResponse: graphqlResponse.initialResponse,
+        // context: requestContext.context,
+        graphqlResponse: {
+          ...requestContext.response,
+          data: response.initialResponse.data,
+          errors: response.initialResponse.errors,
+        },
+        context: requestContext.context,
+      }).graphqlResponse;
+      await dispatcher.invokeHookAsync(
+        'willSendResponse',
+        requestContext as GraphQLRequestContextWillSendResponse<TContext>,
+      );
+      return {
         ...requestContext.response,
-        errors: response.errors,
-        data: response.data,
-        extensions: response.extensions,
-      },
-      context: requestContext.context,
-    }).graphqlResponse;
-    await dispatcher.invokeHookAsync(
-      'willSendResponse',
-      requestContext as GraphQLRequestContextWillSendResponse<TContext>,
-    );
-    return requestContext.response!;
+        initialResponse: response.initialResponse,
+      };
+    } else {
+      // We override errors, data, and extensions with the passed in response,
+      // but keep other properties (like http)
+      const response = graphqlResponse as GraphQLResponse;
+
+      requestContext.response = extensionStack.willSendResponse({
+        graphqlResponse: {
+          ...requestContext.response,
+          errors: response.errors,
+          data: response.data,
+          extensions: response.extensions,
+        },
+        context: requestContext.context,
+      }).graphqlResponse;
+      await dispatcher.invokeHookAsync(
+        'willSendResponse',
+        requestContext as GraphQLRequestContextWillSendResponse<TContext>,
+      );
+      return requestContext.response!;
+    }
   }
 
   /**
