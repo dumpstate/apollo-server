@@ -314,19 +314,18 @@ function makeTestHTTP(): Trace.HTTP {
   });
 }
 
-describe("tests for the shouldReportQuery reporting option", () => {
+describe('tests for the shouldReportQuery reporting option', () => {
   const schema = makeExecutableSchema({ typeDefs });
   addMockFunctionsToSchema({ schema });
 
   const addTrace = jest.fn();
   beforeEach(() => {
     addTrace.mockClear();
-  })
-  it("report no traces", async () => {
-
+  });
+  it('report no traces', async () => {
     const pluginInstance = plugin({ traceReporting: false }, addTrace);
 
-    await pluginTestHarness({
+    const context = await pluginTestHarness({
       pluginInstance,
       schema,
       graphqlRequest: {
@@ -344,17 +343,20 @@ describe("tests for the shouldReportQuery reporting option", () => {
         });
       },
     });
+    expect(context.metrics.captureTraces).toBeFalsy();
   });
 
   it('report traces based on operation name', async () => {
     const pluginInstance = plugin(
       {
-        traceReporting: async (request) => {
-          return request.request.operationName === 'report'
-        }
-      }, addTrace);
+        traceReporting: async request => {
+          return request.request.operationName === 'report';
+        },
+      },
+      addTrace,
+    );
 
-    await pluginTestHarness({
+    const context1 = await pluginTestHarness({
       pluginInstance,
       schema,
       graphqlRequest: {
@@ -374,9 +376,10 @@ describe("tests for the shouldReportQuery reporting option", () => {
     });
 
     expect(addTrace).toBeCalledTimes(1);
+    expect(context1.metrics.captureTraces).toBeTruthy();
     addTrace.mockClear();
 
-    await pluginTestHarness({
+    const context2 = await pluginTestHarness({
       pluginInstance,
       schema,
       graphqlRequest: {
@@ -396,9 +399,9 @@ describe("tests for the shouldReportQuery reporting option", () => {
     });
 
     expect(addTrace).not.toBeCalled();
+    expect(context2.metrics.captureTraces).toBeFalsy();
   });
 });
-
 
 /**
  * TESTS FOR THE sendHeaders REPORTING OPTION
