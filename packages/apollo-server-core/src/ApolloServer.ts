@@ -553,8 +553,8 @@ export class ApolloServerBase {
             'to report metrics to Apollo Graph Manager.',
         );
       }
-      extensions.push(() =>
-        this.engineReportingAgent!.newExtension(schemaHash),
+      (extensions as any).push(() =>
+        this.engineReportingAgent!.newExtension(schemaHash) as any,
       );
     } else if (engine !== false && schemaIsFederated) {
       // We haven't configured this app to use Engine directly. But it looks like
@@ -565,14 +565,14 @@ export class ApolloServerBase {
       } = require('apollo-engine-reporting');
       const rewriteError =
         engine && typeof engine === 'object' ? engine.rewriteError : undefined;
-      extensions.push(
+      (extensions as any).push(
         () => new EngineFederatedTracingExtension({ rewriteError }),
       );
     }
 
     // Note: doRunQuery will add its own extensions if you set tracing,
     // or cacheControl.
-    extensions.push(...(_extensions || []));
+    (extensions as any).push(...(_extensions || []));
 
     // Initialize the document store.  This cannot currently be disabled.
     const documentStore = this.initializeDocumentStore();

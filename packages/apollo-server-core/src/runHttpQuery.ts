@@ -47,6 +47,7 @@ export interface HttpQueryResponse {
   // of the HTTP response, which could contain multiple GraphQL responses
   // when using batching.
   graphqlResponse: string;
+  graphqlResponses?: AsyncIterable<string>;
   responseInit: ApolloServerHttpResponse;
 }
 
