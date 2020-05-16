@@ -18,8 +18,6 @@
 import { $$asyncIterator, forEach, isCollection } from 'iterall';
 import { GraphQLError, locatedError } from 'graphql/error';
 import invariant from 'graphql/jsutils/invariant';
-import isInvalid from 'graphql/jsutils/isInvalid';
-import isNullish from 'graphql/jsutils/isNullish';
 import memoize3 from 'graphql/jsutils/memoize3';
 import promiseForObject from 'graphql/jsutils/promiseForObject';
 import promiseReduce from 'graphql/jsutils/promiseReduce';
@@ -69,6 +67,14 @@ import GraphQLDeferDirective from './GraphQLDeferDirective';
 import Maybe from 'graphql/tsutils/Maybe';
 import { Kind } from 'graphql';
 
+function isInvalid(value): boolean {
+  return value === undefined || value !== value;
+}
+
+function isNullish(value): boolean {
+  return value === null || value === undefined || value !== value;
+}
+
 /**
  * Rewrite flow types in typescript
  */
@@ -82,7 +88,6 @@ export type ExecutionArgs = {
   variableValues?: Maybe<{ [key: string]: any }>;
   operationName?: Maybe<string>;
   fieldResolver?: Maybe<GraphQLFieldResolver<any, any>>;
-  enableDefer?: boolean;
 };
 
 function isPromise(
@@ -123,7 +128,6 @@ export type ExecutionContext = {
   variableValues: { [variable: string]: {} };
   fieldResolver: GraphQLFieldResolver<any, any>;
   errors: GraphQLError[];
-  enableDefer?: boolean;
   patchDispatcher?: PatchDispatcher;
   deferredDependents?: Record<
     string,
@@ -142,7 +146,6 @@ export function buildExecutionContext(
   rawVariableValues: Record<string, {}> | null,
   operationName: string | null,
   fieldResolver: GraphQLFieldResolver<any, any> | null,
-  enableDefer?: boolean,
 ): GraphQLError[] | ExecutionContext {
   const errors: Array<GraphQLError> = [];
   let operation: OperationDefinitionNode | undefined;
@@ -215,7 +218,6 @@ export function buildExecutionContext(
     variableValues,
     fieldResolver: fieldResolver || defaultFieldResolver,
     errors,
-    enableDefer,
   };
 }
 
@@ -227,9 +229,6 @@ function shouldDeferNode(
   exeContext: ExecutionContext,
   node: FragmentSpreadNode | FieldNode | InlineFragmentNode,
 ): boolean {
-  if (!exeContext.enableDefer) {
-    return false;
-  }
   const defer = getDirectiveValues(
     GraphQLDeferDirective,
     node,
@@ -400,7 +399,6 @@ export function execute(
   variableValues?: { [variable: string]: {} },
   operationName?: string,
   fieldResolver?: GraphQLFieldResolver<any, any>,
-  enableDefer?: boolean,
 ): MaybePromise<ExecutionResult | DeferredExecutionResult>;
 export function execute(
   argsOrSchema,
@@ -410,7 +408,6 @@ export function execute(
   variableValues,
   operationName,
   fieldResolver,
-  enableDefer,
 ): MaybePromise<ExecutionResult | DeferredExecutionResult> {
   /* eslint-enable no-redeclare */
   // Extract arguments from object args if provided.
@@ -423,7 +420,6 @@ export function execute(
         argsOrSchema.variableValues,
         argsOrSchema.operationName,
         argsOrSchema.fieldResolver,
-        argsOrSchema.enableDefer,
       )
     : executeImpl(
         argsOrSchema,
@@ -433,7 +429,6 @@ export function execute(
         variableValues,
         operationName,
         fieldResolver,
-        enableDefer,
       );
 }
 
@@ -448,7 +443,6 @@ function executeImpl(
   variableValues,
   operationName,
   fieldResolver,
-  enableDefer,
 ): MaybePromise<ExecutionResult | DeferredExecutionResult> {
   // If arguments are missing or incorrect, throw an error.
   assertValidExecutionArguments(schema, document, variableValues);
@@ -463,7 +457,6 @@ function executeImpl(
     variableValues,
     operationName,
     fieldResolver,
-    enableDefer,
   );
 
   // Return early errors if execution context failed.

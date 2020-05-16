@@ -37,6 +37,7 @@ import {
 
 import WebSocket from 'ws';
 
+import GraphQLDeferDirective from './GraphQLDeferDirective';
 import { formatApolloErrors } from 'apollo-server-errors';
 import {
   GraphQLServerOptions,
@@ -451,7 +452,17 @@ export class ApolloServerBase {
 
     let constructedSchema: GraphQLSchema;
     if (schema) {
-      constructedSchema = schema;
+      const newDirectives = schema.getDirectives().slice();
+      newDirectives.push(GraphQLDeferDirective);
+
+      constructedSchema = new GraphQLSchema({
+        query: schema.getQueryType(),
+        mutation: schema.getMutationType(),
+        subscription: schema.getSubscriptionType(),
+        types: Object.values(schema.getTypeMap()),
+        directives: newDirectives,
+        astNode: schema.astNode,
+      });
     } else if (modules) {
       const { schema, errors } = buildServiceDefinition(modules);
       if (errors && errors.length > 0) {
@@ -484,6 +495,14 @@ export class ApolloServerBase {
             ) on FIELD_DEFINITION | OBJECT | INTERFACE
           `,
         );
+
+        if (!isDirectiveDefined(augmentedTypeDefs, 'defer')) {
+          augmentedTypeDefs.push(
+            gql`
+              directive @defer(if: Boolean = true) on FIELD
+            `,
+          );
+        }
       }
 
       if (this.uploadsConfig) {

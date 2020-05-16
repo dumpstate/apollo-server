@@ -315,7 +315,6 @@ export async function processHTTPRequest<TContext>(
 
       try {
         const requestContext = buildRequestContext(request);
-
         const response = await processGraphQLRequest(options, requestContext);
         const isDeferred = isDeferredGraphQLResponse(response);
         const initialResponse = isDeferred
@@ -342,18 +341,20 @@ export async function processHTTPRequest<TContext>(
 
         body = prettyJSONStringify(serializeGraphQLResponse(initialResponse));
 
-        responseInit.headers!['Content-Length'] = Buffer.byteLength(
-          body,
-          'utf8',
-        ).toString();
+        if (!isDeferred) {
+          responseInit.headers!['Content-Length'] = Buffer.byteLength(
+            body,
+            'utf8',
+          ).toString();
+        }
 
         return {
-          graphqlResponse: isDeferred ? '' : body,
+          graphqlResponse: isDeferred ? undefined : body,
           graphqlResponses: isDeferred ? graphqlResponseToAsyncIterable(
             response as DeferredGraphQLResponse,
           ) : undefined,
           responseInit,
-        };
+        } as any;
       } catch (error) {
         if (error instanceof InvalidGraphQLRequestError) {
           throw new HttpQueryError(400, error.message);

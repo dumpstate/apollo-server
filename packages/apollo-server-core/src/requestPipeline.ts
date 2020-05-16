@@ -89,6 +89,7 @@ export function isDeferredGraphQLResponse(
   result: any,
 ): result is DeferredGraphQLResponse {
   return (
+    result &&
     (<DeferredGraphQLResponse>result).initialResponse !== undefined &&
     (<DeferredGraphQLResponse>result).deferredPatches !== undefined
   );
@@ -398,10 +399,13 @@ export async function processGraphQLRequest<TContext>(
         };
 
         if (isDeferredExecutionResult(result)) {
+          const executionResult = result.initialResult;
           const patches = result.deferredPatches;
 
           response = {
-            initialResponse: response,
+            initialResponse: {
+              data: executionResult.data,
+            },
             deferredPatches: patches!,
             requestDidEnd: executionDidEnd,
           };
@@ -523,22 +527,18 @@ export async function processGraphQLRequest<TContext>(
       const response = graphqlResponse as DeferredGraphQLResponse;
 
       requestContext.response = extensionStack.willSendResponse({
-        // graphqlResponse: graphqlResponse.initialResponse,
-        // context: requestContext.context,
-        graphqlResponse: {
-          ...requestContext.response,
-          data: response.initialResponse.data,
-          errors: response.initialResponse.errors,
-        },
+        graphqlResponse: response.initialResponse,
         context: requestContext.context,
       }).graphqlResponse;
+
       await dispatcher.invokeHookAsync(
         'willSendResponse',
         requestContext as GraphQLRequestContextWillSendResponse<TContext>,
       );
+
       return {
-        ...requestContext.response,
-        initialResponse: response.initialResponse,
+        ...graphqlResponse,
+        initialResponse: requestContext.response,
       };
     } else {
       // We override errors, data, and extensions with the passed in response,

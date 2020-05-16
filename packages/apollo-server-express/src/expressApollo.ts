@@ -77,6 +77,7 @@ export function graphqlExpress(
           res.write(terminatingBoundary);
           res.end();
         }
+
       },
       (error: HttpQueryError) => {
         if ('HttpQueryError' !== error.name) {
