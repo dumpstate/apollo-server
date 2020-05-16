@@ -1,4 +1,4 @@
-import { ApolloServerBase } from 'apollo-server-core';
+import { ApolloServerBase, DeferredGraphQLResponse } from 'apollo-server-core';
 import { GraphQLResponse } from 'apollo-server-types';
 import { print, DocumentNode } from 'graphql';
 
@@ -23,7 +23,7 @@ type Mutation = {
 };
 
 export interface ApolloServerTestClient {
-  query: (query: Query) => Promise<GraphQLResponse>;
+  query: (query: Query) => Promise<GraphQLResponse | DeferredGraphQLResponse>;
   mutate: (mutation: Mutation) => Promise<GraphQLResponse>;
 }
 
@@ -46,5 +46,5 @@ export default (server: ApolloServerBase): ApolloServerTestClient => {
     });
   };
 
-  return { query: test, mutate: test };
+  return { query: test, mutate: test } as any;
 };
